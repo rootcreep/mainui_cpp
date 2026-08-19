@@ -20,7 +20,6 @@ GNU General Public License for more details.
 #include "Utils.h"
 #include "Scissor.h"
 
-#define HEADER_HEIGHT_FRAC 1.75f
 
 CMenuTable::CMenuTable() : BaseClass(),
 	bFramedHintText( false ),
@@ -180,6 +179,32 @@ bool CMenuTable::MouseMove( int x, int y )
 	iTopItem = bound( 0, iTopItem, m_pModel->GetRows() - iNumRows );
 
 	return true;
+}
+
+int CMenuTable::CalcVisibleRowCount( int startItem ) const
+{
+	if( !m_pModel || m_pModel->GetRows() <= 0 )
+		return 0;
+
+	startItem = bound( 0, startItem, m_pModel->GetRows() - 1 );
+
+	int count = 0;
+	int y = boxPos.y;
+
+	const int bottom = boxPos.y + boxSize.h;
+
+	for( int i = startItem; i < m_pModel->GetRows(); i++ )
+	{
+		const int rowHeight = m_pModel->GetRowHeight( i, m_scChSize );
+
+		if( y + rowHeight > bottom )
+			break;
+
+		y += rowHeight;
+		count++;
+	}
+
+	return count;
 }
 
 bool CMenuTable::MoveView(int delta )
@@ -493,12 +518,13 @@ void CMenuTable::DrawLine( Point p, const char **psz, size_t size, uint textColo
 	}
 }
 
-void CMenuTable::DrawLine( Point p, int line, uint textColor, bool forceCol, uint fillColor )
+void CMenuTable::DrawLine( Point p, int line, uint textColor, bool forceCol, uint fillColor, uint rowHeight )
 {
 	int i;
 	Size sz;
 
-	sz.h = m_scChSize;
+	sz.h = rowHeight;
+	int contentOffsetY = ( rowHeight - m_scChSize ) / 2;
 
 	unsigned int newFillColor;
 	bool forceFillColor = false;
@@ -545,9 +571,26 @@ void CMenuTable::DrawLine( Point p, int line, uint textColor, bool forceCol, uin
 		switch( type )
 		{
 		case CELL_TEXT:
-			UI_DrawString( font, p, sz, str, textColor, m_scChSize, m_pModel->GetAlignmentForColumn( i ),
-				textflags | ( m_pModel->IsCellTextWrapped( line, i ) ? 0 : ETF_NOSIZELIMIT ) );
+		{
+			Point contentPos = p;
+			contentPos.y += contentOffsetY;
+
+			Size contentSize = sz;
+			contentSize.h = m_scChSize;
+
+			UI_DrawString(
+				font,
+				contentPos,
+				contentSize,
+				str,
+				textColor,
+				m_scChSize,
+				m_pModel->GetAlignmentForColumn( i ),
+				textflags | ( m_pModel->IsCellTextWrapped( line, i ) ? 0 : ETF_NOSIZELIMIT )
+			);
+
 			break;
+		}
 		case CELL_IMAGE_ADDITIVE:
 		case CELL_IMAGE_DEFAULT:
 		case CELL_IMAGE_HOLES:
@@ -559,6 +602,7 @@ void CMenuTable::DrawLine( Point p, int line, uint textColor, bool forceCol, uin
 				continue;
 
 			Point picPos = p;
+			picPos.y += ( rowHeight - m_scChSize ) / 2;
 			Size picSize = EngFuncs::PIC_Size( pic );
 			float scale = (float)m_scChSize/(float)picSize.h;
 
@@ -601,6 +645,62 @@ void CMenuTable::DrawLine( Point p, int line, uint textColor, bool forceCol, uin
 
 			break;
 		}
+		case CELL_IMAGE_ROWSCALED:
+		{
+			// Like CELL_IMAGE_TRANS, this draws with transparency, but scales to the row's height
+			// (rowHeight, as computed by the model's GetRowHeight())
+			// rather than to the text char height (m_scChSize). This
+			// is what lets a model grow avatar-style cells purely by
+			// varying row height -- e.g. based on how many rows need
+			// to fit -- without needing a larger font for the whole
+			// row just to get a bigger image.
+			HIMAGE pic = EngFuncs::PIC_Load( str );
+
+			if( !pic )
+				continue;
+
+			Size picSize = EngFuncs::PIC_Size( pic );
+
+			// Small fixed margin so the avatar doesn't touch the row's
+			// top/bottom edge even when rowHeight == picSize after scale.
+			int avatarMargin = Q_max( 0, (int)( 2 * uiStatic.scaleY ));
+			int targetHeight = Q_max( 1, (int)rowHeight - avatarMargin * 2 );
+
+			// Never let the (assumed square-ish) avatar grow wider than
+			// its own column -- callers size columns independently of
+			// row height, so this is the one place that can enforce it
+			// regardless of what the caller's column width happens to be.
+			targetHeight = Q_min( targetHeight, (int)sz.w );
+
+			float scale = (float)targetHeight / (float)picSize.h;
+			picSize = picSize * scale;
+
+			Point picPos = p;
+			picPos.y += ( rowHeight - picSize.h ) / 2;
+
+			switch( m_pModel->GetAlignmentForColumn( i ) )
+			{
+			case QM_RIGHT: picPos.x += ( sz.w - picSize.w ); break;
+			case QM_CENTER: picPos.x += ( sz.w - picSize.w ) / 2; break;
+			default: break;
+			}
+
+			if( useCustomColors )
+			{
+				int r, g, b, a;
+				UnpackRGBA( r, g, b, a, newFillColor );
+				EngFuncs::PIC_Set( pic, r, g, b, a );
+			}
+			else
+			{
+				EngFuncs::PIC_Set( pic, 255, 255, 255 );
+			}
+
+			// Row-scaled images use the same transparent draw mode as CELL_IMAGE_TRANS.
+			EngFuncs::PIC_DrawTrans( picPos, picSize );
+
+			break;
+		}
 		}
 	}
 }
@@ -611,14 +711,19 @@ void CMenuTable::Draw()
 	int selColor = PackRGB( 80, 56, 24 );
 	int upFocus, downFocus, scrollbarFocus;
 
-	// HACKHACK: recalc iNumRows, to be not greater than iNumItems
-	iNumRows = ( m_scSize.h - iStrokeWidth * 2 ) / m_scChSize - 1;
-	if( iNumRows > m_pModel->GetRows() )
-		iNumRows = m_pModel->GetRows();
-
-	// HACKHACK: normalize iTopItem
-	// remove when there will be per-pixel scrolling
-	iTopItem = bound( 0, iTopItem, m_pModel->GetRows() - 1 );
+	// Calculate the actual number of rows that fit in the table.
+	// Rows may have different heights, so using boxHeight / m_scChSize
+	// is not valid here.
+	if( m_pModel->GetRows() > 0 )
+	{
+		iTopItem = bound( 0, iTopItem, m_pModel->GetRows() - 1 );
+		iNumRows = CalcVisibleRowCount( iTopItem );
+	}
+	else
+	{
+		iTopItem = 0;
+		iNumRows = 0;
+	}
 
 	if( UI_CursorInRect( boxPos, boxSize ) )
 	{
@@ -747,8 +852,13 @@ void CMenuTable::Draw()
 	UI::Scissor::PushScissor( boxPos, boxSize );
 	y = boxPos.y;
 
-	for( i = iTopItem; i < m_pModel->GetRows() && i < iNumRows + iTopItem; i++, y += m_scChSize )
+	for( i = iTopItem; i < m_pModel->GetRows(); i++ )
 	{
+		int rowHeight = m_pModel->GetRowHeight( i, m_scChSize );
+
+		if( y + rowHeight > boxPos.y + boxSize.h )
+			break;
+
 		int color = colorBase; // predict state
 		bool forceCol = false;
 		int fillColor = 0;
@@ -775,7 +885,8 @@ void CMenuTable::Draw()
 			}
 		}
 
-		DrawLine( Point( boxPos.x, y ), i, color, forceCol, fillColor );
+		DrawLine( Point( boxPos.x, y ), i, color, forceCol, fillColor, rowHeight );
+		y += rowHeight;
 	}
 
 	UI::Scissor::PopScissor();

@@ -24,6 +24,13 @@ enum ECellType
 	CELL_IMAGE_ADDITIVE,
 	CELL_IMAGE_TRANS,
 	CELL_IMAGE_HOLES,
+	// Like CELL_IMAGE_TRANS, but scales to the row's height (rowHeight,
+	// as returned by the model's GetRowHeight()) instead of to the
+	// table's text char height (m_scChSize). Use this for cells whose
+	// image should grow/shrink with row height independently of the
+	// font -- e.g. player avatars -- without needing a larger font
+	// tier just to get a larger image. See CMenuTable::DrawLine().
+	CELL_IMAGE_ROWSCALED,
 	// CELL_ITEM,
 };
 
@@ -47,6 +54,7 @@ public:
 	virtual bool GetCellColors( int line, int column, unsigned int &textColor, bool &force ) const { return false; }
 	virtual bool IsCellTextWrapped( int line, int column ) { return true; }
 	// virtual CMenuBaseItem *GetCellItem( int line, int column ) { return NULL; }
+	virtual int GetRowHeight( int line, int defaultHeight ) const { return defaultHeight; }
 
 	// sorting
 	virtual bool Sort( int column, bool ascend ) { return false; } // false means no sorting support for column

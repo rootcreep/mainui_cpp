@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "BaseModel.h"
 
 #define MAX_TABLE_COLUMNS 16
+#define HEADER_HEIGHT_FRAC 1.75f
 
 /*
  * CMenuTable
@@ -138,7 +139,8 @@ private:
 	float Step( void );
 
 	void DrawLine(Point p, const char **psz, size_t size, uint textColor, bool forceCol, uint fillColor = 0);
-	void DrawLine(Point p, int line, uint textColor, bool forceCol, uint fillColor = 0);
+	void DrawLine(Point p, int line, uint textColor, bool forceCol, uint fillColor = 0, uint rowHeight = 0);
+	int CalcVisibleRowCount( int startItem ) const;
 
 	const char	*szHeaderTexts[MAX_TABLE_COLUMNS];
 	struct

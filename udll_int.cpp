@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include "cl_dll/IGameClientExports.h"
 #include "interface.h"
 #include "font/FontManager.h"
+#include "menus/Scoreboard.h"
 
 extern void UI_JoinGame_Show( int param1, int param2 );
 extern void UI_JoinClassT_Show( int param1, int param2 );
@@ -224,16 +225,18 @@ public:
 		return g_FontMgr->DrawCharacter( font, ch, Point(x, y), charH, color, forceAdditive );
 	}
 
-	void SetupScoreboard( int xstart, int xend, int ystart, int yend, unsigned int color, bool drawStroke ) override
+	void SetupScoreboard( void ) override
 	{
 		// TODO: Implement scoreboard setup using mainui drawing functions
 		// This should configure scoreboard rendering parameters
+		UI_VidInitScoreboard( );
 	}
 
 	void DrawScoreboard( void ) override
 	{
 		// TODO: Implement scoreboard drawing using mainui font and drawing functions
 		// This should render the actual scoreboard with player names, scores, etc.
+		UI_DrawScoreboard();
 	}
 
 	void DrawSpectatorMenu( void ) override
