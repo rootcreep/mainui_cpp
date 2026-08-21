@@ -48,7 +48,7 @@ enum ETeamColor
 	TEAM_COLOR_T,
 	TEAM_COLOR_CT,
 	TEAM_COLOR_SPECTATOR,
-	TEAM_COLOR_UNASSIGMENT,
+	TEAM_COLOR_UNASSIGNED,
 	TEAM_COLOR_NONE
 };
 
@@ -59,7 +59,7 @@ static uint GetTeamColor( ETeamColor color )
 	case TEAM_COLOR_T:                      return g_ColorRed;
 	case TEAM_COLOR_CT:                     return g_ColorBlue;
 	case TEAM_COLOR_SPECTATOR:
-	case TEAM_COLOR_UNASSIGMENT:    return g_ColorWhite;
+	case TEAM_COLOR_UNASSIGNED:    return g_ColorWhite;
 	default:                                return g_ColorYellow;
 	}
 }
@@ -93,6 +93,8 @@ struct player_t
 	int      deaths;
 	int      kills;
 	int      ping;
+	bool	 dead;
+	bool	 isBot;
 
 	uint64_t m_nSteamID;
 	int      clientIndex;
@@ -125,7 +127,7 @@ struct scoreboard_row_t
 };
 
 // ============================================================
-// Steam presentation cache (avatar texture + friend flag)
+// Steam presentation cache
 //
 // GetPlayerSteamInfo() hands back a *copy* of the broker's cache entry --
 // there's no way for the UI to clear avatar_dirty on the master copy, so
@@ -144,7 +146,7 @@ struct scoreboard_steam_cache_t
 	uint64_t steamid;
 	bool     isFriend;
 	bool     avatarUploaded;
-	char     avatarPicName[32]; // "#steam_avatar_<16 hex digits>"
+	char     avatarPicName[32]; // "#<16 hex digits>.png"
 };
 
 static scoreboard_steam_cache_t g_ScoreboardSteamCache[MAX_CLIENTS];
@@ -191,14 +193,14 @@ static void UpdatePlayerSteamPresentation( scoreboard_row_t &row, const player_t
 		return;
 	}
 
-	// cache.isFriend = ( info.relationship == SBRK_PLAYER_RELATIONSHIP_FRIEND );
+	cache.isFriend = ( info.relationship == SBRK_PLAYER_RELATIONSHIP_FRIEND );
 
 	if( !cache.avatarUploaded && info.avatar_png_size > 0 )
 	{
 		snprintf(
 			cache.avatarPicName,
 			sizeof(cache.avatarPicName),
-			"#steam_avatar_%016" PRIx64,
+			"#%016" PRIx64 ".png",
 			player.m_nSteamID
 		);
 
@@ -207,8 +209,6 @@ static void UpdatePlayerSteamPresentation( scoreboard_row_t &row, const player_t
 		if( hPic )
 			cache.avatarUploaded = true;
 	}
-
-	cache.isFriend = cache.avatarUploaded && player.thisplayer == 0;
 
 	row.isFriend = cache.isFriend;
 	row.avatar = cache.avatarUploaded ? cache.avatarPicName : NULL;
@@ -370,7 +370,7 @@ public:
 			return true;
 
 		case ROW_SPECTATOR:
-			if( column == 0 || column == 1 ) // friend icon / avatar: draw untinted
+			if( column == 0 || column == 1 )
 				return false;
 			color = GetTeamColor( TEAM_COLOR_SPECTATOR );
 			force = false;
@@ -505,9 +505,59 @@ int CMenuScoreboard::PlayerCompar( const void *a, const void *b )
 	return 0;
 }
 
+// ============================================================
+// Localized "<name>  -  <count> player(s)" section title.
+// ============================================================
+
+static void SubstituteOrderedArgs( char *buf, size_t size, const char *fmt, const char *arg1, const char *arg2 )
+{
+	size_t len = 0;
+	buf[0] = '\0';
+
+	if( size == 0 )
+		return;
+
+	while( *fmt && len + 1 < size )
+	{
+		const char *arg = NULL;
+
+		if( !strncmp( fmt, "%s1", 3 ))
+		{
+			arg = arg1;
+			fmt += 3;
+		}
+		else if( !strncmp( fmt, "%s2", 3 ))
+		{
+			arg = arg2;
+			fmt += 3;
+		}
+
+		if( arg )
+		{
+			size_t argLen = strlen( arg );
+			size_t avail = size - len - 1;
+			size_t copyLen = Q_min( argLen, avail );
+
+			memcpy( buf + len, arg, copyLen );
+			len += copyLen;
+		}
+		else
+		{
+			buf[len++] = *fmt++;
+		}
+
+		buf[len] = '\0';
+	}
+}
+
 static void FormatSectionTitle( char *buf, size_t size, const char *name, int count )
 {
-	snprintf( buf, size, "%s - %d %s", name, count, count == 1 ? "player" : "players" );
+	const char *fmt = L( count == 1 ? "Cstrike_ScoreBoard_Player" : "Cstrike_ScoreBoard_Players" );
+	char countStr[16];
+
+	snprintf( countStr, sizeof( countStr ), "%d", count );
+
+	SubstituteOrderedArgs( buf, size, fmt, name, countStr );
 }
 
 // ============================================================
@@ -515,7 +565,7 @@ static void FormatSectionTitle( char *buf, size_t size, const char *name, int co
 // ============================================================
 int CMenuScoreboard::CalcFixedRowsHeight( int charHeight ) const
 {
-	int total = (int)( charHeight * HEADER_HEIGHT_FRAC ); // шапка таблицы (SCORE/DEATHS/...)
+	int total = (int)( charHeight * HEADER_HEIGHT_FRAC );
 
 	for( int i = 0; i < model.rows.Count(); i++ )
 	{
@@ -659,7 +709,7 @@ void CMenuScoreboard::AddPlayerRow( const player_t &player, ETeamColor color )
 	if( player.attrib )
 		snprintf( row.attrib, sizeof( row.attrib ), "%s", player.attrib );
 
-	if( player.sb_health > 0 && ( !player.attrib || strcmp( player.attrib, "Dead" ) != 0 ))
+	if( player.sb_health > 0 && !player.dead )
 		snprintf( row.health, sizeof( row.health ), "%d", player.sb_health );
 
 	if( player.sb_account > 0 )
@@ -668,7 +718,7 @@ void CMenuScoreboard::AddPlayerRow( const player_t &player, ETeamColor color )
 	snprintf( row.score, sizeof( row.score ), "%d", player.kills );
 	snprintf( row.deaths, sizeof( row.deaths ), "%d", player.deaths );
 
-	if( player.ping > 0 || player.thisplayer != 0 )
+	if( !player.isBot )
 		snprintf( row.ping, sizeof( row.ping ), "%d", player.ping );
 	else
 		snprintf( row.ping, sizeof( row.ping ), "%s", "BOT" );
@@ -722,43 +772,28 @@ void CMenuScoreboard::DrawBackground()
 {
 	const uint bgColor = PackRGBA( 0, 0, 0, m_iBackgroundAlpha );
 
-	UI_DrawPic( m_scPos, roundCornerSize, bgColor, "gfx/vgui/round_corner_nw.tga", QM_DRAWTRANS );
+	const struct { const char *pic; Point offset; } corners[] = {
+		{ "gfx/vgui/round_corner_nw.tga", { 0, 0 } },
+		{ "gfx/vgui/round_corner_ne.tga", { m_scSize.w - roundCornerSize.w, 0 } },
+		{ "gfx/vgui/round_corner_sw.tga", { 0, m_scSize.h - roundCornerSize.h } },
+		{ "gfx/vgui/round_corner_se.tga", { m_scSize.w - roundCornerSize.w, m_scSize.h - roundCornerSize.h } },
+	};
 
-	UI_DrawPic( m_scPos
-		    + Size( m_scSize.w
-			    - roundCornerSize.w,
-			    0 ),
-		    roundCornerSize, bgColor, "gfx/vgui/round_corner_ne.tga", QM_DRAWTRANS );
+	for( auto &c : corners )
+		UI_DrawPic( m_scPos + c.offset, roundCornerSize, bgColor, c.pic, QM_DRAWTRANS );
 
-	UI_DrawPic( m_scPos
-		    + Size( 0, m_scSize.h
-			    - roundCornerSize.h ),
-		    roundCornerSize, bgColor, "gfx/vgui/round_corner_sw.tga", QM_DRAWTRANS );
-
-	UI_DrawPic( m_scPos
-		    + ( m_scSize
-			- roundCornerSize ),
-		    roundCornerSize, bgColor, "gfx/vgui/round_corner_se.tga", QM_DRAWTRANS );
-
-	UI_FillRect( m_scPos
-		     + Size( roundCornerSize.w, 0 ),
-		     Size( m_scSize.w
-			   - roundCornerSize.w * 2,
-			   roundCornerSize.h ),
+	// top and bottom strips between the corners
+	UI_FillRect( m_scPos + Size( roundCornerSize.w, 0 ),
+		     Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ),
 		     bgColor );
 
-	UI_FillRect( m_scPos
-		     + Size( 0, roundCornerSize.h ),
-		     Size( m_scSize.w, m_scSize.h
-			   - roundCornerSize.h * 2 ),
+	UI_FillRect( m_scPos + Size( roundCornerSize.w, m_scSize.h - roundCornerSize.h ),
+		     Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ),
 		     bgColor );
 
-	UI_FillRect( m_scPos
-		     + Size( roundCornerSize.w, m_scSize.h
-			     - roundCornerSize.h ),
-		     Size( m_scSize.w
-			   - roundCornerSize.w * 2,
-			   roundCornerSize.h ),
+	// full-height middle band (covers left/right edges too)
+	UI_FillRect( m_scPos + Size( 0, roundCornerSize.h ),
+		     Size( m_scSize.w, m_scSize.h - roundCornerSize.h * 2 ),
 		     bgColor );
 }
 
@@ -802,30 +837,26 @@ void CMenuScoreboard::Draw()
 
 			memset( &player, 0, sizeof( player ));
 
-			player.kills = extra->frags;
-			player.name = pplayer->name;
 			player.clientIndex = i;
-
-			if( isBot )
-				player.ping = -1;
-			else
-				player.ping = pplayer->ping;
-
+			player.name = pplayer->name;
+			player.isBot = isBot;
 			player.sb_health = extra->sb_health;
 			player.sb_account = extra->sb_account;
-			player.deaths = extra->deaths;
 			player.kills = extra->frags;
+			player.dead = extra->dead;
+			player.deaths = extra->deaths;
+			player.ping = pplayer->ping;
 			player.thisplayer = pplayer->thisplayer;
 			player.m_nSteamID = pplayer->m_nSteamID;
 
-			if( extra->dead )
-				player.attrib = "Dead";
-			else if( extra->has_c4 )
-				player.attrib = "Bomb";
-			else if( extra->vip )
-				player.attrib = "VIP";
-			else if( extra->has_defuse_kit )
-				player.attrib = "D. Kit";
+			if ( extra->dead )
+				player.attrib = L( "Cstrike_DEAD" );
+			else if ( extra->has_c4 )
+				player.attrib = L( "Cstrike_BOMB" );
+			else if ( extra->vip )
+				player.attrib = L( "Cstrike_VIP" );
+			else if ( extra->has_defuse_kit )
+				player.attrib = L( "Cstrike_DEFUSE_KIT" );
 			else
 				player.attrib = NULL;
 
@@ -853,8 +884,8 @@ void CMenuScoreboard::Draw()
 	// ========================================================
 
 	AddSeparator( TEAM_COLOR_NONE );
-	AddTeamSection( TEAM_COLOR_T, "Terrorists", Ts_score, Ts_players );
-	AddTeamSection( TEAM_COLOR_CT, "Counter-Terrorists", CTs_score, CTs_players );
+	AddTeamSection( TEAM_COLOR_T, L( "Cstrike_ScoreBoard_Ter" ), Ts_score, Ts_players );
+	AddTeamSection( TEAM_COLOR_CT, L( "Cstrike_ScoreBoard_CT" ), CTs_score, CTs_players );
 
 	if( spectators_players.Count())
 	{
@@ -922,13 +953,13 @@ void CMenuScoreboard::Init()
 
 	table.SetupColumn( 0, "", SCOREBOARD_FRIEND_WIDTH, true );
 	table.SetupColumn( 1, "", SCOREBOARD_AVATAR_WIDTH, true );
-	table.SetupColumn( 2, serverName_buf, 0.50f );
+	table.SetupColumn( 2, serverName_buf, 0.45f );
 	table.SetupColumn( 3, "", 0.10f );
-	table.SetupColumn( 4, "HP", 0.05f );
-	table.SetupColumn( 5, "MONEY", 0.10f );
-	table.SetupColumn( 6, L( "Cstrike_TitlesTXT_SCORE" ), 0.10f );
-	table.SetupColumn( 7, L( "Cstrike_TitlesTXT_DEATHS" ), 0.10f );
-	table.SetupColumn( 8, L( "Cstrike_TitlesTXT_LATENCY" ), 0.10f );
+	table.SetupColumn( 4, L( "Cstrike_HEALTH" ), 0.10f );
+	table.SetupColumn( 5, L( "Cstrike_ACCOUNT" ), 0.10f );
+	table.SetupColumn( 6, L( "PlayerScore" ), 0.10f );
+	table.SetupColumn( 7, L( "PlayerDeath" ), 0.10f );
+	table.SetupColumn( 8, L( "PlayerPing" ), 0.10f );
 	table.SetModel( &model );
 	table.SetCharSize( m_eCurrentFont );
 	table.bAllowSorting = false;
